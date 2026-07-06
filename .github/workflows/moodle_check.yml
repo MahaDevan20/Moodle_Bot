@@ -1,0 +1,43 @@
+name: Moodle Assignment Check
+
+on:
+  schedule:
+    # Runs every 30 minutes
+    - cron: "*/30 * * * *"
+  workflow_dispatch:   # allows manual trigger from GitHub UI
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to commit tracker files back
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Run Moodle check
+        env:
+          MOODLE_USERNAME: ${{ secrets.MOODLE_USERNAME }}
+          MOODLE_PASSWORD: ${{ secrets.MOODLE_PASSWORD }}
+          SENDER_EMAIL:    ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          RECEIVER_EMAIL:  ${{ secrets.RECEIVER_EMAIL }}
+        run: python moodle_bot.py
+
+      # Commit tracker files back so the next run knows what was already seen/alerted
+      - name: Save tracker files
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add last_assignments.txt sent_deadline_alerts.txt
+          git diff --staged --quiet || git commit -m "chore: update assignment trackers [skip ci]"
+          git push
