@@ -48,8 +48,53 @@ def _write_set(filepath: str, items):
     with open(filepath, "w", encoding="utf-8") as f:
         f.write("\n".join(sorted(items)))
 
+def fetch_assignment_details(session, url):
+    if not url:
+        return None, None
+    try:
+        resp = session.get(url, timeout=10)
+        if resp.status_code != 200:
+            return None, None
+        
+        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # 1. Parse Course / Subject Name
+        course_name = None
+        course_a = soup.find("a", href=lambda h: h and "course/view.php" in h)
+        if course_a:
+            title_attr = course_a.get("title")
+            if title_attr:
+                course_name = title_attr.strip()
+            else:
+                course_name = course_a.get_text(strip=True)
+        
+        # 2. Parse Due Date
+        due_date = None
+        dates_div = soup.find(class_="activity-dates")
+        if dates_div:
+            for div in dates_div.find_all("div"):
+                text = div.get_text(strip=True)
+                if text.startswith("Due:"):
+                    due_date = text.replace("Due:", "").strip()
+                    break
+        
+        if not due_date:
+            for tr in soup.find_all("tr"):
+                th = tr.find(["th", "td"], class_="c0")
+                if th and "due date" in th.get_text().lower():
+                    td = tr.find(class_="c1")
+                    if td:
+                        due_date = td.get_text(strip=True)
+                        break
+                        
+        return course_name, due_date
+    except Exception as e:
+        print(f"  [ERROR] Fetch details failed for {url}: {e}")
+        return None, None
+
+
 def send_email(subject: str, body: str):
-    msg = MIMEText(body)
+    msg = MIMEText(body, "html")
     msg["Subject"] = subject
     msg["From"]    = SENDER_EMAIL
     msg["To"]      = RECEIVER_EMAIL
@@ -124,7 +169,7 @@ def run_moodle_check():
     print(f"\n[PARSE] Found {len(event_spans)} raw event span(s)")
 
     seen_names    = set()
-    events_parsed = []   # list of (name: str, due_ts: int | None)
+    events_parsed = []   # list of (name: str, due_ts: int | None, link: str | None)
 
     for span in event_spans:
         raw_name   = span.get_text(" ", strip=True)
@@ -149,32 +194,59 @@ def run_moodle_check():
             print(f"  [SKIP] '{clean_name}' — past due ({datetime.fromtimestamp(due_ts, tz=timezone.utc).strftime('%Y-%m-%d')})")
             continue
 
-        events_parsed.append((clean_name, due_ts))
+        # Get assignment link if available
+        link = None
+        a_tag = span.find_parent("a")
+        if a_tag and "href" in a_tag.attrs:
+            link = a_tag["href"]
+
+        events_parsed.append((clean_name, due_ts, link))
         due_label = (
             datetime.fromtimestamp(due_ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
             if due_ts else "no date"
         )
-        print(f"  [EVENT] '{clean_name}' | Due: {due_label}")
+        print(f"  [EVENT] '{clean_name}' | Due: {due_label} | Link: {link}")
 
     if not events_parsed:
         print("\n[RESULT] No active (future) events found on the dashboard.")
         return
 
-    current_names = [name for name, _ in events_parsed]
+    current_names = [name for name, _, _ in events_parsed]
 
     # ------------------------------------------------------------------
     # 4. NEW ASSIGNMENT detection
     # ------------------------------------------------------------------
     old_known  = _load_set(TRACKER_FILE)
-    new_items  = [n for n in current_names if n not in old_known]
+    new_events = [item for item in events_parsed if item[0] not in old_known]
 
-    if new_items:
-        print(f"\n[NEW] {new_items}")
+    if new_events:
+        print(f"\n[NEW] {[item[0] for item in new_events]}")
         body = (
-            "Hello,\n\n"
-            "The following new assignment(s) have been added to Moodle:\n\n"
-            + "".join(f"  * {item}\n" for item in new_items)
-            + "\nLog in to Moodle for details.\n\nRegards,\nMoodle Alert Bot"
+            "<p>Hello,</p>"
+            "<p>The following new assignment(s) have been added to Moodle:</p>"
+            "<ol>"
+        )
+        for name, due_ts, link in new_events:
+            course_name, due_date = fetch_assignment_details(session, link)
+            if not course_name:
+                course_name = "Not specified"
+            if not due_date:
+                if due_ts:
+                    due_date = datetime.fromtimestamp(due_ts, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+                else:
+                    due_date = "No deadline specified"
+            
+            body += (
+                f"<li>"
+                f"<strong>{name}</strong><br>"
+                f"<b>Subject:</b> {course_name}<br>"
+                f"<b>Last submission date:</b> {due_date}"
+                f"</li>"
+            )
+        body += (
+            "</ol>"
+            "<p>Log in to Moodle for details.</p>"
+            "<p>Regards,<br>Moodle Alert Bot</p>"
         )
         send_email("New Moodle Assignment Added", body)
     else:
@@ -189,13 +261,13 @@ def run_moodle_check():
     already_alerted = _load_set(DEADLINE_SENT_FILE)
     deadline_alerts = []
 
-    for name, due_ts in events_parsed:
+    for name, due_ts, link in events_parsed:
         if due_ts is None:
             continue
         hours_left = (due_ts - now_ts) / 3600
         if hours_left <= DEADLINE_ALERT_HOURS:
             if name not in already_alerted:
-                deadline_alerts.append((name, due_ts, hours_left))
+                deadline_alerts.append((name, due_ts, hours_left, link))
                 _append_entry(DEADLINE_SENT_FILE, name)   # mark before sending
                 print(f"  [DEADLINE] '{name}' due in {hours_left:.1f}h — alerting")
             else:
@@ -205,13 +277,29 @@ def run_moodle_check():
 
     if deadline_alerts:
         body = (
-            "Hello,\n\n"
-            f"The following assignment(s) are due within {DEADLINE_ALERT_HOURS} hours:\n\n"
+            "<p>Hello,</p>"
+            f"<p>The following assignment(s) are due within {DEADLINE_ALERT_HOURS} hours:</p>"
+            "<ol>"
         )
-        for name, due_ts, hours_left in deadline_alerts:
-            due_str = datetime.fromtimestamp(due_ts, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
-            body += f"  * {name}\n    Due: {due_str}  ({hours_left:.1f} hours remaining)\n\n"
-        body += "Please submit on time!\n\nRegards,\nMoodle Alert Bot"
+        for name, due_ts, hours_left, link in deadline_alerts:
+            course_name, due_date = fetch_assignment_details(session, link)
+            if not course_name:
+                course_name = "Not specified"
+            if not due_date:
+                due_date = datetime.fromtimestamp(due_ts, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M %Z")
+            
+            body += (
+                f"<li>"
+                f"<strong>{name}</strong><br>"
+                f"<b>Subject:</b> {course_name}<br>"
+                f"<b>Last submission date:</b> {due_date} ({hours_left:.1f} hours remaining)"
+                f"</li>"
+            )
+        body += (
+            "</ol>"
+            "<p>Please submit on time!</p>"
+            "<p>Regards,<br>Moodle Alert Bot</p>"
+        )
         send_email(f"Deadline Alert: {len(deadline_alerts)} assignment(s) due soon", body)
     else:
         print("\n[DEADLINE] No upcoming deadlines within the alert window.")
