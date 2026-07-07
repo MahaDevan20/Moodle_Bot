@@ -2,10 +2,10 @@ name: Moodle Assignment Check
 
 on:
   schedule:
-    # Runs every 30 minutes
-
-    - cron: "7,37 * * * *"
-  workflow_dispatch:   # allows manual trigger from GitHub UI
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+  repository_dispatch:
+    types: [run-check]  # allows manual trigger from GitHub UI
 
 jobs:
   check:
