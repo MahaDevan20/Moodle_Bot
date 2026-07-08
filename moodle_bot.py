@@ -245,7 +245,7 @@ def run_moodle_check():
             )
         body += (
             "</ol>"
-            "<p>Log in to Moodle for details.</p>"
+            f"<p><a href=\"{MOODLE_LOGIN_URL}\">Log in to see more details</a>.</p>"
             "<p>Regards,<br>Moodle Alert Bot</p>"
         )
         send_email("New Moodle Assignment Added", body)
@@ -298,6 +298,7 @@ def run_moodle_check():
         body += (
             "</ol>"
             "<p>Please submit on time!</p>"
+            f"<p><a href=\"{MOODLE_LOGIN_URL}\">Log in to see more details</a>.</p>"
             "<p>Regards,<br>Moodle Alert Bot</p>"
         )
         send_email(f"Deadline Alert: {len(deadline_alerts)} assignment(s) due soon", body)
