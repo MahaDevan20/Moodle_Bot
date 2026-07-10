@@ -8,8 +8,8 @@ from email.mime.text import MIMEText
 from datetime import datetime, timezone
 
 # --- CONFIGURATION (prefer environment variables for GitHub Actions) ---
-MOODLE_LOGIN_URL = "https://lms.rajagiri.edu/login/index.php"
-DASHBOARD_URL    = "https://lms.rajagiri.edu/my/"
+MOODLE_LOGIN_URL = os.environ.get("MOODLE_LOGIN_URL")
+DASHBOARD_URL    = os.environ.get("DASHBOARD_URL")
 
 USERNAME         = os.environ.get("MOODLE_USERNAME")
 PASSWORD         = os.environ.get("MOODLE_PASSWORD")
